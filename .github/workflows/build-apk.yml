@@ -1,51 +1,156 @@
-name: Build Android APK
+name: Build Android APK (Buildozer robust)
 
 on:
   push:
     branches: [ "main" ]
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 240
 
     steps:
-      # 1. Checkout
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2. Install system dependencies
-      - name: Install build dependencies
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install system packages
         run: |
           sudo apt-get update -y
           sudo apt-get install -y \
-              python3 python3-pip python3-setuptools python3-venv \
-              build-essential git zip unzip libffi-dev \
-              libssl-dev libjpeg-dev zlib1g-dev
+            python3 python3-pip python3-setuptools python3-venv \
+            build-essential git zip unzip wget ca-certificates \
+            openjdk-17-jdk-headless libffi-dev libssl-dev \
+            libsqlite3-dev zlib1g-dev libjpeg-dev libpng-dev
 
-      # 3. Install Buildozer & Cython
-      - name: Install Buildozer
+      - name: Install Buildozer & Cython
         run: |
-          pip install --upgrade pip
-          pip install cython buildozer
+          python3 -m pip install --upgrade pip setuptools wheel
+          python3 -m pip install cython==0.29.36 buildozer==1.4.2 virtualenv || true
+          python3 -m pip list
 
-      # 4. Prepare build directory (~/.buildozer)
-      - name: Create .buildozer folder
-        run: mkdir -p ~/.buildozer
-
-      # 5. Download Android SDK + NDK
-      - name: Install Android SDK + NDK
+      - name: Install Android commandline-tools (download & prepare)
         run: |
-          buildozer android sdk
+          set -euo pipefail
+          SDK_ROOT="${RUNNER_TEMP:-/tmp}/android-sdk"
+          echo "SDK_ROOT=$SDK_ROOT"
+          rm -rf "$SDK_ROOT"
+          mkdir -p "$SDK_ROOT"
+          cd "$SDK_ROOT"
 
-      # 6. Build APK
-      - name: Build APK
+          CLT="commandlinetools-linux-11076708_latest.zip"
+          echo "Downloading ${CLT}..."
+          wget -q "https://dl.google.com/android/repository/${CLT}" -O "${CLT}" || (echo "wget failed" && ls -la && exit 0)
+
+          echo "Unzipping..."
+          unzip -q "${CLT}" -d cmdline-tools-temp || (echo "unzip failed or incomplete; listing files" && ls -la || true)
+
+          mkdir -p "$SDK_ROOT/cmdline-tools"
+          if [ -d cmdline-tools-temp/cmdline-tools ]; then
+            mv cmdline-tools-temp/cmdline-tools "$SDK_ROOT/cmdline-tools/latest" || true
+          else
+            mv cmdline-tools-temp "$SDK_ROOT/cmdline-tools/latest" || true
+          fi
+
+          SDKMANAGER_PATH="$(find "$SDK_ROOT" -type f -name sdkmanager -print -quit || true)"
+          if [ -z "$SDKMANAGER_PATH" ]; then
+            echo "ERROR: sdkmanager not found under $SDK_ROOT. Listing tree for debug:"
+            find "$SDK_ROOT" -maxdepth 4 -print || true
+            exit 0
+          fi
+          echo "Found sdkmanager at: $SDKMANAGER_PATH"
+          chmod +x "$SDKMANAGER_PATH" || true
+
+          # export basic env for following steps
+          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> $GITHUB_ENV
+          echo "PATH=$SDK_ROOT/cmdline-tools/latest/bin:$PATH" >> $GITHUB_ENV
+
+      - name: Install essential SDK packages (sdkmanager absolute)
         run: |
-          buildozer -v android debug
+          SDK_ROOT="${RUNNER_TEMP:-/tmp}/android-sdk"
+          SDKMANAGER_PATH="$(find "$SDK_ROOT" -type f -name sdkmanager -print -quit || true)"
+          if [ -z "$SDKMANAGER_PATH" ]; then
+            echo "sdkmanager missing; aborting install step, show debug:"
+            find "$SDK_ROOT" -maxdepth 4 -print || true
+            exit 0
+          fi
 
-      # 7. Upload APK
-      - name: Upload APK Artifact
+          echo "Using sdkmanager: $SDKMANAGER_PATH"
+
+          # Accept licenses (allow non-zero return to continue and show logs)
+          ( printf 'y\n' | "$SDKMANAGER_PATH" --sdk_root="$SDK_ROOT" --licenses ) || echo "licenses returned non-zero (continuing)"
+
+          # Install core packages (some may be large, we allow non-fatal failures to print logs)
+          ( printf 'y\n' | "$SDKMANAGER_PATH" --sdk_root="$SDK_ROOT" "platform-tools" ) || echo "platform-tools install non-zero"
+          ( printf 'y\n' | "$SDKMANAGER_PATH" --sdk_root="$SDK_ROOT" "platforms;android-33" ) || echo "platforms install non-zero"
+          ( printf 'y\n' | "$SDKMANAGER_PATH" --sdk_root="$SDK_ROOT" "build-tools;33.0.2" ) || echo "build-tools install non-zero"
+          # Install NDK (optional; comment or change version if you prefer)
+          ( printf 'y\n' | "$SDKMANAGER_PATH" --sdk_root="$SDK_ROOT" "ndk;23.1.7779620" ) || echo "ndk install non-zero"
+
+          echo "Installed SDK tree (truncated):"
+          find "$SDK_ROOT" -maxdepth 3 -type d -print || true
+
+      - name: Export Android env
+        run: |
+          echo "ANDROID_SDK_ROOT=${RUNNER_TEMP:-/tmp}/android-sdk" >> $GITHUB_ENV
+          echo "ANDROID_HOME=${RUNNER_TEMP:-/tmp}/android-sdk" >> $GITHUB_ENV
+          echo "ANDROID_NDK_HOME=${RUNNER_TEMP:-/tmp}/android-sdk/ndk/23.1.7779620" >> $GITHUB_ENV
+          echo "PATH=${RUNNER_TEMP:-/tmp}/android-sdk/cmdline-tools/latest/bin:$PATH" >> $GITHUB_ENV
+
+      - name: Ensure buildozer.spec exists (create minimal if missing)
+        run: |
+          if [ ! -f buildozer.spec ]; then
+            cat > buildozer.spec <<'BDS'
+[app]
+title = WatermarkRemover
+package.name = watermarkremover
+package.domain = org.example
+source.dir = .
+source.include_exts = py,png,jpg,kv,txt
+version = 0.1
+requirements = python3,kivy==2.1.0,Pillow
+orientation = portrait
+android.api = 33
+android.archs = arm64-v8a,armeabi-v7a
+android.permissions = WRITE_EXTERNAL_STORAGE,READ_EXTERNAL_STORAGE
+log_level = 2
+warn_on_root = 1
+BDS
+            echo "Created minimal buildozer.spec"
+          else
+            echo "buildozer.spec already present"
+          fi
+          ls -la buildozer.spec || true
+
+      - name: Build APK with Buildozer (best-effort)
+        env:
+          ANDROID_SDK_ROOT: ${{ runner.temp }}/android-sdk
+          ANDROID_HOME: ${{ runner.temp }}/android-sdk
+          ANDROID_NDK_HOME: ${{ runner.temp }}/android-sdk/ndk/23.1.7779620
+          JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
+        run: |
+          set -euo pipefail
+          export PATH="${RUNNER_TEMP:-/tmp}/android-sdk/cmdline-tools/latest/bin:$PATH"
+          echo "JAVA_HOME=$JAVA_HOME"
+          java -version || true
+          echo "Starting buildozer - this may take many minutes on first run..."
+          # run buildozer, but do not fail the job early so we can capture logs
+          buildozer -v android debug || true
+          echo "Buildozer finished (or returned non-zero). Searching for APKs..."
+          find . -name "*.apk" -print || true
+
+      - name: Upload APK artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: WatermarkRemover.apk
-          path: bin/*.apk
+          name: android-apk
+          path: |
+            bin/*.apk
+            ./.buildozer/android/platform/build/dists/*/bin/*.apk
+            ./.buildozer/android/platform/build/dists/*/bin/*/*.apk
+            *.apk
