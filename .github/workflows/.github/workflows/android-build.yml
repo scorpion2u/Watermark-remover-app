@@ -1,0 +1,59 @@
+name: Build Android APK (Buildozer)
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 80
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            python3-pip python3-setuptools git zip unzip \
+            openjdk-17-jdk \
+            autoconf automake libtool pkg-config zlib1g-dev
+
+      - name: Install Buildozer & Cython
+        run: |
+          pip3 install --upgrade pip
+          pip3 install buildozer cython==0.29.36
+
+      - name: Install Android SDK / NDK
+        env:
+          ANDROID_HOME: ${{ runner.temp }}/android-sdk
+        run: |
+          mkdir -p $ANDROID_HOME/cmdline-tools
+          cd $ANDROID_HOME/cmdline-tools
+          wget https://dl.google.com/android/repository/commandlinetools-linux-8512546_latest.zip -O tools.zip
+          unzip tools.zip -d cmdline-tools
+          yes | $ANDROID_HOME/cmdline-tools/cmdline-tools/bin/sdkmanager \
+            --sdk_root=$ANDROID_HOME \
+            "platform-tools" \
+            "platforms;android-31" \
+            "build-tools;31.0.0" \
+            "ndk;23.1.7779620"
+
+      - name: Build APK
+        env:
+          ANDROIDSDK: ${{ runner.temp }}/android-sdk
+          ANDROID_HOME: ${{ runner.temp }}/android-sdk
+          ANDROID_NDK_HOME: ${{ runner.temp }}/android-sdk/ndk/23.1.7779620
+        run: |
+          buildozer android debug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Watermark-Remover-APK
+          path: |
+            bin/*.apk
+            .buildozer/android/platform/build/dists/*/bin/*.apk
