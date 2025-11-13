@@ -1,4 +1,4 @@
-name: Build Android APK (robust)
+name: Android Minimal Check
 
 on:
   push:
@@ -7,154 +7,19 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
+  minimal:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 10
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Basic system packages
+      - name: Print environment and list files
         run: |
-          sudo apt-get update -y
-          sudo apt-get install -y python3 python3-pip wget unzip zip ca-certificates
-          sudo apt-get install -y openjdk-17-jdk-headless git
-
-      - name: Install Python tools (pip, buildozer, cython)
-        run: |
-          python3 -m pip install --upgrade pip setuptools wheel
-          python3 -m pip install cython==0.29.36
-          python3 -m pip install buildozer==1.4.2 virtualenv || true
-          python3 -m pip list
-
-      - name: Install Android SDK tools and packages (robust)
-        env:
-          ANDROID_ROOT_TMP: ${{ runner.temp }}/android-sdk
-        run: |
-          # 这个区块尽量容错，不在这里使用 set -euo pipefail，以避免管道错误导致 step 立即失败
-          echo "START SDK INSTALL"
-          SDK_ROOT="${ANDROID_ROOT_TMP}"
-          echo "SDK_ROOT=$SDK_ROOT"
-          rm -rf "$SDK_ROOT"
-          mkdir -p "$SDK_ROOT"
-          cd "$SDK_ROOT"
-
-          CLT_ZIP="commandlinetools-linux-11076708_latest.zip"
-          echo "Downloading commandlinetools..."
-          if ! wget -q "https://dl.google.com/android/repository/${CLT_ZIP}" -O "${CLT_ZIP}"; then
-            echo "wget failed, aborting download step but continuing to show files"
-          fi
-
-          echo "Unzipping commandlinetools..."
-          if ! unzip -q "${CLT_ZIP}" -d cmdline-tools-temp; then
-            echo "unzip may have failed or file missing; continuing for debug"
-          fi
-
-          mkdir -p "$SDK_ROOT/cmdline-tools"
-          if [ -d cmdline-tools-temp/cmdline-tools ]; then
-            mv cmdline-tools-temp/cmdline-tools "$SDK_ROOT/cmdline-tools/tools" || true
-          else
-            mv cmdline-tools-temp "$SDK_ROOT/cmdline-tools/tools" || true
-          fi
-
-          chmod +x "$SDK_ROOT/cmdline-tools/tools/bin/"* || true
-          export PATH="$SDK_ROOT/cmdline-tools/tools/bin:$PATH"
-          echo "PATH contains: $(echo $PATH | sed -n '1,200p')"
-
-          echo "Attempting to accept licenses (ignore pipe errors)..."
-          ( printf 'y\n' | sdkmanager --sdk_root="$SDK_ROOT" --licenses ) || echo "licenses accept returned non-zero, continuing"
-
-          echo "Installing platform-tools (with retry)"
-          attempt=0
-          until [ $attempt -ge 2 ]
-          do
-            ( printf 'y\n' | sdkmanager --sdk_root="$SDK_ROOT" "platform-tools" ) && break
-            attempt=$((attempt+1))
-            echo "platform-tools install failed - retry $attempt"
-            sleep 3
-          done
-
-          echo "Installing other packages (non-fatal if some fail)"
-          ( printf 'y\n' | sdkmanager --sdk_root="$SDK_ROOT" "platforms;android-33" ) || echo "platforms install non-zero"
-          ( printf 'y\n' | sdkmanager --sdk_root="$SDK_ROOT" "build-tools;33.0.2" ) || echo "build-tools non-zero"
-          ( printf 'y\n' | sdkmanager --sdk_root="$SDK_ROOT" "ndk;23.1.7779620" ) || echo "ndk non-zero"
-
-          echo "Show small tree of SDK root:"
-          ls -la "$SDK_ROOT" || true
-          ls -la "$SDK_ROOT/cmdline-tools/tools/bin" || true
-          echo "sdkmanager path: $(command -v sdkmanager || true)"
-          "$SDK_ROOT/cmdline-tools/tools/bin/sdkmanager" --version || true
-          echo "SDK install script finished."
-
-      - name: Prepare environment variables (for later steps)
-        run: |
-          echo "ANDROID_HOME=${RUNNER_TEMP:-/tmp}/android-sdk" >> $GITHUB_ENV
-          echo "ANDROID_SDK_ROOT=${RUNNER_TEMP:-/tmp}/android-sdk" >> $GITHUB_ENV
-          echo "PATH=${RUNNER_TEMP:-/tmp}/android-sdk/cmdline-tools/tools/bin:$PATH" >> $GITHUB_ENV
-          echo "Environment prepared. Listing RUNNER_TEMP:"
-          ls -la "${RUNNER_TEMP:-/tmp}" || true
-
-      - name: Show workspace & repo files
-        run: |
-          echo "Repo root:"
-          pwd
+          echo "Simple minimal workflow running"
+          echo "User: $(whoami)"
+          echo "Python: $(python3 --version || true)"
+          echo "Java: $(java -version || true)"
+          echo "Listing repo root:"
           ls -la
-          echo "Show first 200 files in repo (if many, truncated):"
-          find . -maxdepth 3 -type f -print | sed -n '1,200p' || true
-
-      - name: Build with Buildozer (best-effort)
-        env:
-          ANDROID_HOME: ${{ runner.temp }}/android-sdk
-          ANDROIDSDK: ${{ runner.temp }}/android-sdk
-          ANDROID_NDK_HOME: ${{ runner.temp }}/android-sdk/ndk/23.1.7779620
-          JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
-        run: |
-          set -euo pipefail
-          export PATH="${RUNNER_TEMP:-/tmp}/android-sdk/cmdline-tools/tools/bin:$PATH"
-          echo "JAVA_HOME=$JAVA_HOME"
-          java -version || true
-          echo "Checking buildozer command..."
-          command -v buildozer || echo "buildozer not found in PATH"
-
-          # 如果没有 buildozer.spec，先写一个最小的文件，避免立即失败
-          if [ ! -f buildozer.spec ]; then
-            echo "No buildozer.spec found — creating a minimal one for test build."
-            cat > buildozer.spec <<'BDS'
-[app]
-title = WatermarkRemover
-package.name = watermarkremover
-package.domain = org.example
-source.include_exts = py,png,jpg,kv,txt
-version = 0.1
-requirements = python3,kivy==2.1.0,numpy,Pillow
-orientation = portrait
-android.arch = arm64-v8a,armeabi-v7a
-icon.filename = icon.png
-android.permissions = WRITE_EXTERNAL_STORAGE,READ_EXTERNAL_STORAGE
-log_level = 2
-warn_on_root = 1
-BDS
-          fi
-
-          # 运行 buildozer 调试构建（可能耗时很久）。用 || true 确保后续步骤仍会运行并上传日志。
-          buildozer -v android debug || true
-
-          echo "Looking for APK files..."
-          find . -name "*.apk" -print || true
-
-      - name: Upload APK artifacts (if any)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: Watermark-Remover-APK
-          path: |
-            bin/*.apk
-            ./.buildozer/android/platform/build/dists/*/bin/*.apk
-            ./.buildozer/android/platform/build/dists/*/bin/*/*.apk
-            *.apk
-
-      - name: Final workspace listing
-        run: |
-          echo "Final files under workspace (maxdepth 4):"
-          find . -maxdepth 4 -type f -print || true
