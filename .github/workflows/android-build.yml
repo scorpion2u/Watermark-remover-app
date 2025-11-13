@@ -2,7 +2,8 @@ name: Build Android APK (Buildozer)
 
 on:
   push:
-    branches: [ main ]
+    branches:
+      - main
   workflow_dispatch:
 
 jobs:
@@ -11,19 +12,10 @@ jobs:
     timeout-minutes: 120
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Show basic info
-        run: |
-          echo "Runner: $(uname -a)"
-          echo "Python: $(python3 -V || true)"
-          ls -la
-          pwd
-          echo "Listing repo root:"
-          find . -maxdepth 2 -type f -print || true
-
-      - name: Install apt packages
+      - name: Install system dependencies
         run: |
           sudo apt-get update -y
           sudo apt-get install -y \
@@ -33,120 +25,42 @@ jobs:
             build-essential libncurses5 libncurses5-dev \
             libssl-dev libffi-dev
 
-      - name: Install Buildozer & helpers
+      - name: Install Python modules
         run: |
           python3 -m pip install --upgrade pip setuptools wheel
-          # pin cython for buildozer compatibility
           python3 -m pip install cython==0.29.36
-          # install a stable buildozer release
-          python3 -m pip install --upgrade buildozer==1.4.2
-          python3 -m pip install --upgrade virtualenv
-          echo "pip installed packages:"
-          python3 -m pip list
+          python3 -m pip install buildozer==1.4.2
+          python3 -m pip install virtualenv
 
-      - name: Install Android SDK / NDK and tools
-        env:
-          ANDROID_HOME: ${{ runner.temp }}/android-sdk
+      - name: Install Android SDK
         run: |
-          set -euo pipefail
-          echo "ANDROID_HOME = $ANDROID_HOME"
-          mkdir -p "$ANDROID_HOME"
-          cd "$ANDROID_HOME"
+          export ANDROID_HOME=$HOME/android-sdk
+          mkdir -p $ANDROID_HOME
+          cd $ANDROID_HOME
+          wget -q https://dl.google.com/android/repository/commandlinetools-linux-8512546_latest.zip
+          unzip -q commandlinetools-linux-8512546_latest.zip -d cmdline-tools-temp
+          mkdir -p cmdline-tools
+          mv cmdline-tools-temp/cmdline-tools cmdline-tools/latest
+          export PATH=$ANDROID_HOME/cmdline-tools/latest/bin:$PATH
+          yes | sdkmanager --licenses
+          yes | sdkmanager "platform-tools" "platforms;android-31" "build-tools;31.0.0" "ndk;23.1.7779620"
 
-          CLT_ZIP="commandlinetools-linux-8512546_latest.zip"
-          echo "Downloading commandlinetools..."
-          wget -q "https://dl.google.com/android/repository/${CLT_ZIP}" -O "${CLT_ZIP}"
-
-          echo "Unzipping commandlinetools..."
-          unzip -q "${CLT_ZIP}" -d cmdline-tools-temp
-          mkdir -p "$ANDROID_HOME/cmdline-tools"
-          if [ -d cmdline-tools-temp/cmdline-tools ]; then
-            mv cmdline-tools-temp/cmdline-tools "$ANDROID_HOME/cmdline-tools/latest"
-          else
-            mv cmdline-tools-temp "$ANDROID_HOME/cmdline-tools/latest"
-          fi
-
-          chmod +x "$ANDROID_HOME/cmdline-tools/latest/bin/"* || true
-          export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
-          echo "PATH=$PATH"
-
-          echo "Install platform tools, platforms, build-tools and ndk..."
-          yes | sdkmanager --sdk_root="$ANDROID_HOME" --licenses || true
-          yes | sdkmanager --sdk_root="$ANDROID_HOME" "platform-tools" "platforms;android-31" "build-tools;31.0.0" "ndk;23.1.7779620"
-
-          echo "SDK installed at $ANDROID_HOME"
-          ls -la "$ANDROID_HOME"
-          ls -la "$ANDROID_HOME/cmdline-tools/latest/bin" || true
-
-      - name: Prepare environment for buildozer
+      - name: Build with Buildozer
         env:
-          ANDROID_HOME: ${{ runner.temp }}/android-sdk
-          ANDROIDSDK: ${{ runner.temp }}/android-sdk
-          ANDROID_NDK_HOME: ${{ runner.temp }}/android-sdk/ndk/23.1.7779620
+          ANDROID_HOME: $HOME/android-sdk
+          ANDROIDSDK: $HOME/android-sdk
+          ANDROID_NDK_HOME: $HOME/android-sdk/ndk/23.1.7779620
           JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
         run: |
-          export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
-          echo "JAVA_HOME=$JAVA_HOME"
-          java -version || true
-          echo "ANDROID_HOME=$ANDROID_HOME"
-          echo "Listing $ANDROID_HOME:"
-          ls -la "$ANDROID_HOME" || true
-          # show buildozer version
-          buildozer --version || true
-
-      - name: Build APK (Buildozer)
-        env:
-          ANDROID_HOME: ${{ runner.temp }}/android-sdk
-          ANDROIDSDK: ${{ runner.temp }}/android-sdk
-          ANDROID_NDK_HOME: ${{ runner.temp }}/android-sdk/ndk/23.1.7779620
-          JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
-        run: |
-          set -euo pipefail
-          export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
-          # ensure we are in repo root
-          pwd
-          ls -la
-
-          # If there is no buildozer.spec, create a minimal one to avoid immediate failure
-          if [ ! -f buildozer.spec ]; then
-            echo "WARN: buildozer.spec not found — creating minimal buildozer.spec for testing."
-            cat > buildozer.spec <<'BDS'
-[app]
-title = WatermarkRemover
-package.name = watermarkremover
-package.domain = org.example
-source.include_exts = py,png,jpg,kv,txt
-version = 0.1
-requirements = python3,kivy==2.1.0,numpy,Pillow
-orientation = portrait
-android.arch = arm64-v8a,armeabi-v7a
-icon.filename = icon.png
-android.permissions = WRITE_EXTERNAL_STORAGE,READ_EXTERNAL_STORAGE
-log_level = 2
-warn_on_root = 1
-BDS
-          fi
-
-          # Run buildozer to build debug apk (verbose)
-          # Use --verbose to capture more logs
+          export PATH=$ANDROID_HOME/cmdline-tools/latest/bin:$PATH
           buildozer -v android debug || true
-
-          # try to collect APKs
-          echo "Looking for APK files..."
+          echo "APK search:"
           find . -name "*.apk" -print || true
 
-      - name: Upload APK artifacts
-        if: always()
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: Watermark-Remover-APK
+          name: apk
           path: |
             bin/*.apk
-            ./.buildozer/android/platform/build/dists/*/bin/*.apk
-            ./.buildozer/android/platform/build/dists/*/bin/*/*.apk
-            *.apk
-
-      - name: Show final workspace listing
-        run: |
-          echo "Workspace listing:"
-          find . -maxdepth 4 -type f -print || true
+            .buildozer/android/platform/build/dists/*/bin/*.apk
