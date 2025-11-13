@@ -1,46 +1,117 @@
-name: Android SDK Setup Test
+name: Build Android APK (Buildozer)
 
 on:
   push:
     branches:
       - main
-  workflow_dispatch:
 
 jobs:
-  sdk-test:
+  build-android:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v3
 
-      - name: Install Java (required for Android SDK)
+      ############################################################
+      # 安装 Python 与 Buildozer 环境
+      ############################################################
+      - name: Install Python 3.10
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install system dependencies
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y openjdk-17-jdk
-          java -version
+          sudo apt-get install -y \
+            python3-setuptools python3-pip python3-venv \
+            zip unzip git openjdk-17-jdk \
+            libffi-dev libssl-dev libsqlite3-dev \
+            zlib1g-dev libjpeg-dev libpng-dev
 
-      - name: Install Android SDK commandline-tools
+      - name: Install Buildozer + Cython
         run: |
-          sudo mkdir -p /usr/local/android-sdk/cmdline-tools
-          cd /usr/local/android-sdk/cmdline-tools
-          sudo wget https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O tools.zip
-          sudo unzip tools.zip
-          sudo mv cmdline-tools latest
-          sudo rm tools.zip
+          pip install --upgrade pip
+          pip install cython buildozer
 
-      - name: Set ANDROID_HOME
+      ############################################################
+      # 安装 Android SDK（鲁棒版本）
+      ############################################################
+      - name: Install Android SDK commandline-tools (robust)
         run: |
-          echo "export ANDROID_HOME=/usr/local/android-sdk" >> $GITHUB_ENV
-          echo "export PATH=\$PATH:/usr/local/android-sdk/cmdline-tools/latest/bin" >> $GITHUB_ENV
-          echo "export PATH=\$PATH:/usr/local/android-sdk/platform-tools" >> $GITHUB_ENV
+          set -euo pipefail
+          SDK_ROOT="${RUNNER_TEMP:-/tmp}/android-sdk"
+          echo "SDK_ROOT=$SDK_ROOT"
+          rm -rf "$SDK_ROOT"
+          mkdir -p "$SDK_ROOT"
+          cd "$SDK_ROOT"
 
+          # 下载 commandlinetools
+          CLT="commandlinetools-linux-11076708_latest.zip"
+          echo "Downloading ${CLT}..."
+          wget -q "https://dl.google.com/android/repository/${CLT}" -O "${CLT}"
+
+          echo "Unzipping..."
+          unzip -q "${CLT}" -d cmdline-tools-temp
+
+          # 整理目录结构
+          mkdir -p "$SDK_ROOT/cmdline-tools"
+          if [ -d cmdline-tools-temp/cmdline-tools ]; then
+            mv cmdline-tools-temp/cmdline-tools "$SDK_ROOT/cmdline-tools/latest"
+          else
+            mv cmdline-tools-temp "$SDK_ROOT/cmdline-tools/latest"
+          fi
+
+          # 查找 sdkmanager
+          SDKMANAGER_PATH="$(find "$SDK_ROOT" -type f -name sdkmanager -print -quit)"
+          if [ -z "$SDKMANAGER_PATH" ]; then
+            echo "ERROR: sdkmanager not found!"
+            find "$SDK_ROOT" -maxdepth 4 -print
+            exit 1
+          fi
+
+          echo "Found sdkmanager at: $SDKMANAGER_PATH"
+          chmod +x "$SDKMANAGER_PATH"
+
+          # 写入环境变量
+          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> $GITHUB_ENV
+          echo "PATH=$SDK_ROOT/cmdline-tools/latest/bin:$PATH" >> $GITHUB_ENV
+
+      ############################################################
+      # 安装 SDK Platform/Tools
+      ############################################################
       - name: Install essential SDK packages
         run: |
-          yes | sdkmanager --licenses
-          yes | sdkmanager "platform-tools" "platforms;android-33" "build-tools;33.0.2"
+          SDK_ROOT="$ANDROID_SDK_ROOT"
+          SDKMANAGER_PATH="$(find "$SDK_ROOT" -type f -name sdkmanager -print -quit)"
 
-      - name: Confirm SDK installation
+          echo "Using sdkmanager: $SDKMANAGER_PATH"
+
+          ( printf 'y\n' | "$SDKMANAGER_PATH" --sdk_root="$SDK_ROOT" --licenses ) || true
+          ( printf 'y\n' | "$SDKMANAGER_PATH" --sdk_root="$SDK_ROOT" "platform-tools" ) || true
+          ( printf 'y\n' | "$SDKMANAGER_PATH" --sdk_root="$SDK_ROOT" "platforms;android-33" ) || true
+          ( printf 'y\n' | "$SDKMANAGER_PATH" --sdk_root="$SDK_ROOT" "build-tools;33.0.2" ) || true
+
+          echo "SDK install complete. Listing directory:"
+          find "$SDK_ROOT" -maxdepth 3 -type d
+
+      ############################################################
+      # Buildozer 构建 APK
+      ############################################################
+      - name: Build APK with Buildozer
         run: |
-          sdkmanager --list
+          export ANDROIDSDK="$ANDROID_SDK_ROOT"
+          export ANDROIDNDK="$ANDROID_SDK_ROOT/ndk-bundle"
+
+          echo "Building APK..."
+          buildozer android debug
+
+      ############################################################
+      # 保存构建结果
+      ############################################################
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: android-apk
+          path: bin/*.apk
