@@ -1,4 +1,4 @@
-name: Android SDK Setup Test
+name: Android SDK Setup Robust
 
 on:
   push:
@@ -15,33 +15,60 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Install system packages
+      - name: Basic tools
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y python3 python3-pip zip unzip
+          sudo apt-get install -y python3 python3-pip zip unzip wget ca-certificates
           sudo apt-get install -y openjdk-17-jdk
 
-      - name: Download Android commandline-tools
+      - name: Prepare Android SDK dir
         run: |
-          mkdir -p $HOME/android-sdk
-          cd $HOME/android-sdk
-          wget https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O tools.zip
-          unzip tools.zip -d cmdline-tools
-          mkdir -p cmdline-tools/tools
-          mv cmdline-tools/* cmdline-tools/tools/ || true
+          set -euo pipefail
+          SDK_ROOT="${RUNNER_TEMP:-/tmp}/android-sdk"
+          echo "SDK_ROOT=$SDK_ROOT"
+          rm -rf "$SDK_ROOT"
+          mkdir -p "$SDK_ROOT"
+          ls -la "$SDK_ROOT"
+          echo "created"
 
-      - name: Set Android environment
+      - name: Download and unzip commandlinetools
         run: |
-          echo "ANDROID_HOME=$HOME/android-sdk" >> $GITHUB_ENV
-          echo "PATH=$HOME/android-sdk/cmdline-tools/tools/bin:$PATH" >> $GITHUB_ENV
+          set -euo pipefail
+          SDK_ROOT="${RUNNER_TEMP:-/tmp}/android-sdk"
+          cd "$SDK_ROOT"
+          CLT="commandlinetools-linux-11076708_latest.zip"
+          echo "downloading $CLT..."
+          wget -q "https://dl.google.com/android/repository/${CLT}" -O "$CLT"
+          echo "unzipping..."
+          unzip -q "$CLT" -d cmdline-tools-temp
+          mkdir -p "$SDK_ROOT/cmdline-tools"
+          # some zips contain a top-level "cmdline-tools" dir, others don't
+          if [ -d cmdline-tools-temp/cmdline-tools ]; then
+            mv cmdline-tools-temp/cmdline-tools "$SDK_ROOT/cmdline-tools/tools"
+          else
+            mv cmdline-tools-temp "$SDK_ROOT/cmdline-tools/tools"
+          fi
+          ls -la "$SDK_ROOT/cmdline-tools"
+          ls -la "$SDK_ROOT/cmdline-tools/tools/bin" || true
 
-      - name: Install Android SDK components
+      - name: Export PATH and install SDK components
         run: |
-          yes | $HOME/android-sdk/cmdline-tools/tools/bin/sdkmanager --sdk_root=$HOME/android-sdk "platform-tools" "platforms;android-33"
+          set -euo pipefail
+          SDK_ROOT="${RUNNER_TEMP:-/tmp}/android-sdk"
+          export ANDROID_SDK_ROOT="$SDK_ROOT"
+          export PATH="$SDK_ROOT/cmdline-tools/tools/bin:$PATH"
+          echo "Using sdkmanager at: $(command -v sdkmanager || true)"
+          # show files for debug
+          ls -la "$SDK_ROOT/cmdline-tools/tools/bin" || true
+          # accept licenses and install platform-tools/platforms
+          yes | sdkmanager --sdk_root="$SDK_ROOT" --licenses || true
+          yes | sdkmanager --sdk_root="$SDK_ROOT" "platform-tools" "platforms;android-33" "build-tools;33.0.2"
 
-      - name: Verify SDK installation
+      - name: Verify installation
         run: |
-          echo "Listing Android SDK:"
-          ls -R $HOME/android-sdk
-          echo "Check sdkmanager version:"
-          $HOME/android-sdk/cmdline-tools/tools/bin/sdkmanager --version
+          SDK_ROOT="${RUNNER_TEMP:-/tmp}/android-sdk"
+          echo "Listing SDK root:"
+          ls -R "$SDK_ROOT" | sed -n '1,200p'
+          echo "sdkmanager version:"
+          "$SDK_ROOT/cmdline-tools/tools/bin/sdkmanager" --version || true
+          echo "Done verification."
