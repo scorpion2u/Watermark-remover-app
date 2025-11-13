@@ -18,15 +18,13 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update -y
-          # 常用的构建依赖（去掉不可用的 libncurses5）
           sudo apt-get install -y \
             python3-pip python3-setuptools git zip unzip \
             openjdk-17-jdk-headless \
             autoconf automake libtool pkg-config zlib1g-dev \
-            build-essential libssl-dev libffi-dev \
-            libc6-dev
+            build-essential libssl-dev libffi-dev libc6-dev
 
-      - name: Install Python modules (Buildozer, Cython)
+      - name: Install Python modules (Buildozer & Cython)
         run: |
           python3 -m pip install --upgrade pip setuptools wheel
           python3 -m pip install cython==0.29.36
@@ -34,7 +32,7 @@ jobs:
           python3 -m pip install virtualenv
           python3 -m pip list
 
-      - name: Install Android SDK (commandlinetools) and NDK
+      - name: Install Android SDK tools and NDK
         env:
           ANDROID_HOME: ${{ runner.temp }}/android-sdk
         run: |
@@ -50,7 +48,7 @@ jobs:
           echo "Unzipping commandlinetools..."
           unzip -q "${CLT_ZIP}" -d cmdline-tools-temp
           mkdir -p "$ANDROID_HOME/cmdline-tools"
-          # 兼容zip内含嵌套目录的情况
+
           if [ -d cmdline-tools-temp/cmdline-tools ]; then
             mv cmdline-tools-temp/cmdline-tools "$ANDROID_HOME/cmdline-tools/latest"
           else
@@ -61,14 +59,14 @@ jobs:
           export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
           echo "PATH=$PATH"
 
-          echo "Accepting licenses and installing required packages..."
+          echo "Accepting licenses and installing packages..."
           yes | sdkmanager --sdk_root="$ANDROID_HOME" --licenses || true
           yes | sdkmanager --sdk_root="$ANDROID_HOME" "platform-tools" "platforms;android-31" "build-tools;31.0.0" "ndk;23.1.7779620"
 
           echo "SDK installed at $ANDROID_HOME"
           ls -la "$ANDROID_HOME" || true
 
-      - name: Prepare & show info
+      - name: Prepare environment info
         env:
           ANDROID_HOME: ${{ runner.temp }}/android-sdk
           JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
@@ -79,7 +77,7 @@ jobs:
           ls -la "$ANDROID_HOME" || true
           buildozer --version || true
 
-      - name: Build with Buildozer
+      - name: Build app with Buildozer
         env:
           ANDROID_HOME: ${{ runner.temp }}/android-sdk
           ANDROID_NDK_HOME: ${{ runner.temp }}/android-sdk/ndk/23.1.7779620
@@ -90,8 +88,8 @@ jobs:
           pwd
           ls -la
 
-          # 如果仓库里没有 buildozer.spec，为避免立刻失败，先创建一个最小测试 spec
           if [ ! -f buildozer.spec ]; then
+            echo "No buildozer.spec found — creating minimal spec for test."
             cat > buildozer.spec <<'BDS'
 [app]
 title = WatermarkRemover
@@ -109,10 +107,9 @@ warn_on_root = 1
 BDS
           fi
 
-          # 运行 buildozer 构建（调试模式，打印详细日志）
           buildozer -v android debug || true
 
-          echo "Find APKs:"
+          echo "Search for APKs"
           find . -name "*.apk" -print || true
 
       - name: Upload APK artifact
@@ -128,5 +125,5 @@ BDS
 
       - name: Final listing
         run: |
-          echo "Final workspace:"
+          echo "Workspace files:"
           find . -maxdepth 4 -type f -print || true
