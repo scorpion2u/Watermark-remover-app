@@ -46,13 +46,45 @@ jobs:
           SDK_ROOT="${RUNNER_TEMP:-/tmp}/android-sdk"
           SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
           chmod +x "$SDKMANAGER" || true
+          # Accept licenses
           ( printf 'y\n' | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --licenses ) || true
-          ( printf 'y\n' | "$SDKMANAGER" --sdk_root="$SDK_ROOT" "platform-tools" "platforms;android-33" "build-tools;33.0.2" "ndk;23.1.7779620" ) || true
+          # Install Buildozer-compatible build-tools and platform/ndk
+          ( printf 'y\n' | "$SDKMANAGER" --sdk_root="$SDK_ROOT" \
+            "platform-tools" \
+            "platforms;android-33" \
+            "build-tools;33.0.2" \
+            "ndk;23.1.7779620" ) || true
+
+      - name: Inspect Android SDK (debug)
+        run: |
+          SDK_ROOT="${RUNNER_TEMP:-/tmp}/android-sdk"
+          echo "---- SDK_ROOT: $SDK_ROOT ----"
+          echo "Top-level:"
+          ls -la "$SDK_ROOT" || true
+          echo "cmdline-tools:"
+          ls -la "$SDK_ROOT/cmdline-tools" || true
+          echo "platforms:"
+          ls -la "$SDK_ROOT/platforms" || true
+          echo "build-tools:"
+          ls -la "$SDK_ROOT/build-tools" || true
+          if [ -d "$SDK_ROOT/build-tools/33.0.2" ]; then
+            echo "Contents of build-tools/33.0.2:"
+            ls -la "$SDK_ROOT/build-tools/33.0.2" || true
+            echo "Check aidl / aapt / aapt2:"
+            test -x "$SDK_ROOT/build-tools/33.0.2/aidl" && echo "aidl exists and is executable" || echo "aidl MISSING or not executable"
+            test -x "$SDK_ROOT/build-tools/33.0.2/aapt" && echo "aapt exists and is executable" || echo "aapt MISSING or not executable"
+            test -x "$SDK_ROOT/build-tools/33.0.2/aapt2" && echo "aapt2 exists and is executable" || echo "aapt2 MISSING or not executable"
+          else
+            echo "build-tools/33.0.2 NOT FOUND"
+          fi
 
       - name: Show repo (debug)
         run: |
-          echo "Repo root files:"; ls -la
-          echo "buildozer.spec:"; sed -n '1,200p' buildozer.spec || true
+          echo "Repo root files:"
+          ls -la
+          echo ""
+          echo "Top of buildozer.spec (if exists):"
+          sed -n '1,200p' buildozer.spec || true
 
       - name: Build with Buildozer
         env:
@@ -61,9 +93,22 @@ jobs:
           ANDROID_NDK_HOME: ${{ runner.temp }}/android-sdk/ndk/23.1.7779620
           JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
         run: |
-          export PATH="${RUNNER_TEMP:-/tmp}/android-sdk/cmdline-tools/latest/bin:$PATH"
-          # 执行构建（如果失败会返回非零）
+          SDK_ROOT="${RUNNER_TEMP:-/tmp}/android-sdk"
+          # Ensure platform-tools and build-tools are on PATH so aidl/aapt are found
+          export PATH="$SDK_ROOT/platform-tools:$SDK_ROOT/build-tools/33.0.2:$SDK_ROOT/cmdline-tools/latest/bin:$PATH"
+          echo "PATH at build start: $PATH"
+          echo "Which aidl/aapt:"
+          which aidl || ls -la "$SDK_ROOT/build-tools/33.0.2/aidl" || true
+          which aapt || ls -la "$SDK_ROOT/build-tools/33.0.2/aapt" || true
+
+          # Ensure aidl is executable if present
+          if [ -f "$SDK_ROOT/build-tools/33.0.2/aidl" ]; then chmod +x "$SDK_ROOT/build-tools/33.0.2/aidl" || true; fi
+          if [ -f "$SDK_ROOT/build-tools/33.0.2/aapt" ]; then chmod +x "$SDK_ROOT/build-tools/33.0.2/aapt" || true; fi
+
+          # Run buildozer (this will fail the job if build fails)
           buildozer -v android debug
+
+          # show found apks
           find . -name "*.apk" -print || true
 
       - name: Collect APKs
@@ -73,6 +118,7 @@ jobs:
           if [ -s /tmp/apk_list.txt ]; then
             while read -r apk; do cp -v "$apk" /tmp/apk_out/ || true; done < /tmp/apk_list.txt
           fi
+          echo "APK out folder listing:"
           ls -la /tmp/apk_out || true
 
       - name: Upload APK artifact
@@ -81,3 +127,12 @@ jobs:
         with:
           name: android-apk
           path: /tmp/apk_out/*.apk
+
+      - name: Upload debug snapshot (if no APK)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-debug-snapshot
+          path: |
+            ./.buildozer/**/*
+            buildozer.spec
