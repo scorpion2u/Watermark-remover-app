@@ -1,0 +1,76 @@
+name: Build APK
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-pip build-essential zip unzip openjdk-17-jdk wget
+
+          pip install --upgrade pip
+          pip install buildozer cython==0.29.36
+
+      - name: Install Android SDK
+        run: |
+          mkdir -p $HOME/android-sdk
+          cd $HOME/android-sdk
+          wget https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O tools.zip
+          unzip tools.zip -d cmdline-tools
+          mv cmdline-tools/cmdline-tools cmdline-tools/latest
+
+          echo "ANDROID_SDK_ROOT=$HOME/android-sdk" >> $GITHUB_ENV
+          echo "PATH=$HOME/android-sdk/cmdline-tools/latest/bin:$PATH" >> $GITHUB_ENV
+
+      - name: Install SDK components
+        run: |
+          yes | sdkmanager --sdk_root=$HOME/android-sdk --licenses || true
+          yes | sdkmanager --sdk_root=$HOME/android-sdk "platform-tools" "platforms;android-33" "build-tools;33.0.2" "ndk;23.1.7779620"
+
+      - name: Create buildozer.spec if missing
+        run: |
+          if [ ! -f buildozer.spec ]; then
+            cat > buildozer.spec <<'BDS'
+[app]
+title = WatermarkRemover
+package.name = watermarkremover
+package.domain = org.example
+source.dir = .
+source.include_exts = py,png,jpg,kv,txt
+version = 0.1
+requirements = python3,kivy==2.1.0,Pillow
+orientation = portrait
+android.api = 33
+android.archs = arm64-v8a,armeabi-v7a
+android.permissions = WRITE_EXTERNAL_STORAGE,READ_EXTERNAL_STORAGE
+log_level = 2
+warn_on_root = 1
+BDS
+          fi
+
+      - name: Build APK
+        env:
+          ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
+        run: |
+          buildozer -v android debug || true
+          find . -name "*.apk"
+
+      - name: Upload APK
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk
+          path: |
+            bin/*.apk
+            .buildozer/android/platform/build/dists/**/bin/*.apk
