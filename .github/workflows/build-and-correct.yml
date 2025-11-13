@@ -1,0 +1,83 @@
+name: Build APK and collect artifacts
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install base deps
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y python3-pip build-essential zip unzip wget openjdk-17-jdk-headless
+
+      - name: Install Buildozer & Cython
+        run: |
+          python3 -m pip install --upgrade pip setuptools wheel
+          python3 -m pip install cython==0.29.36 buildozer==1.5.0
+
+      - name: Install Android commandline-tools
+        run: |
+          SDK_ROOT="${RUNNER_TEMP:-/tmp}/android-sdk"
+          rm -rf "$SDK_ROOT"
+          mkdir -p "$SDK_ROOT"
+          cd "$SDK_ROOT"
+          wget -q "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip" -O tools.zip
+          unzip -q tools.zip -d cmdline-tools || true
+          if [ -d cmdline-tools/cmdline-tools ]; then
+            mv cmdline-tools/cmdline-tools cmdline-tools/latest || true
+          else
+            mkdir -p cmdline-tools/latest
+            mv cmdline-tools/* cmdline-tools/latest/ || true
+          fi
+          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> $GITHUB_ENV
+          echo "PATH=$SDK_ROOT/cmdline-tools/latest/bin:$PATH" >> $GITHUB_ENV
+
+      - name: Install SDK components (sdkmanager)
+        run: |
+          SDK_ROOT="${RUNNER_TEMP:-/tmp}/android-sdk"
+          SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          chmod +x "$SDKMANAGER" || true
+          ( printf 'y\n' | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --licenses ) || true
+          ( printf 'y\n' | "$SDKMANAGER" --sdk_root="$SDK_ROOT" "platform-tools" "platforms;android-33" "build-tools;33.0.2" "ndk;23.1.7779620" ) || true
+
+      - name: Show repo (debug)
+        run: |
+          echo "Repo root files:"; ls -la
+          echo "buildozer.spec:"; sed -n '1,200p' buildozer.spec || true
+
+      - name: Build with Buildozer
+        env:
+          ANDROID_SDK_ROOT: ${{ runner.temp }}/android-sdk
+          ANDROID_HOME: ${{ runner.temp }}/android-sdk
+          ANDROID_NDK_HOME: ${{ runner.temp }}/android-sdk/ndk/23.1.7779620
+          JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
+        run: |
+          export PATH="${RUNNER_TEMP:-/tmp}/android-sdk/cmdline-tools/latest/bin:$PATH"
+          # 执行构建（如果失败会返回非零）
+          buildozer -v android debug
+          find . -name "*.apk" -print || true
+
+      - name: Collect APKs
+        run: |
+          mkdir -p /tmp/apk_out
+          find . -type f -name "*.apk" -print > /tmp/apk_list.txt || true
+          if [ -s /tmp/apk_list.txt ]; then
+            while read -r apk; do cp -v "$apk" /tmp/apk_out/ || true; done < /tmp/apk_list.txt
+          fi
+          ls -la /tmp/apk_out || true
+
+      - name: Upload APK artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: /tmp/apk_out/*.apk
