@@ -1,4 +1,4 @@
-name: Android Minimal Check
+name: Android SDK Setup Test
 
 on:
   push:
@@ -7,19 +7,40 @@ on:
   workflow_dispatch:
 
 jobs:
-  minimal:
+  sdk-test:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 30
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Print environment and list files
+      - name: Install Java (required for Android SDK)
         run: |
-          echo "Simple minimal workflow running"
-          echo "User: $(whoami)"
-          echo "Python: $(python3 --version || true)"
-          echo "Java: $(java -version || true)"
-          echo "Listing repo root:"
-          ls -la
+          sudo apt-get update -y
+          sudo apt-get install -y openjdk-17-jdk
+          java -version
+
+      - name: Install Android SDK commandline-tools
+        run: |
+          sudo mkdir -p /usr/local/android-sdk/cmdline-tools
+          cd /usr/local/android-sdk/cmdline-tools
+          sudo wget https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O tools.zip
+          sudo unzip tools.zip
+          sudo mv cmdline-tools latest
+          sudo rm tools.zip
+
+      - name: Set ANDROID_HOME
+        run: |
+          echo "export ANDROID_HOME=/usr/local/android-sdk" >> $GITHUB_ENV
+          echo "export PATH=\$PATH:/usr/local/android-sdk/cmdline-tools/latest/bin" >> $GITHUB_ENV
+          echo "export PATH=\$PATH:/usr/local/android-sdk/platform-tools" >> $GITHUB_ENV
+
+      - name: Install essential SDK packages
+        run: |
+          yes | sdkmanager --licenses
+          yes | sdkmanager "platform-tools" "platforms;android-33" "build-tools;33.0.2"
+
+      - name: Confirm SDK installation
+        run: |
+          sdkmanager --list
